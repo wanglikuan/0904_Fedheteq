@@ -2,7 +2,7 @@ import torch
 import torchvision
 from PIL import Image
 import torch.nn as nn
-
+import random
 import os
 import os.path
 import numpy as np
@@ -13,9 +13,11 @@ if sys.version_info[0] == 2:
 else:
     import pickle
 
+#from generate_iid_new_origin_dirichlet import rearrange_data_by_class
 #from torchvision.dataset.vision import VisionDataset
 #from torchvision.dataset.utils import check_integrity, download_and_extract_archive
-
+random.seed(42)
+np.random.seed(42)
 
 class CIFAR10Instance(torchvision.datasets.CIFAR10):
     """CIFAR10Instance Dataset.
@@ -26,9 +28,59 @@ class CIFAR10Instance(torchvision.datasets.CIFAR10):
                                                            transform=transform,
                                                            target_transform=target_transform)
 
-    train_list = [
-        ['data_batch_1', 'c99cafc152244af753f735de768cd75f'],
-    ]
+        self.origin_data = []        
+        # now load the picked numpy arrays
+        for file_name, checksum in downloaded_list:
+            file_path = os.path.join(self.root, self.base_folder, file_name)
+            with open(file_path, 'rb') as f:
+                if sys.version_info[0] == 2:
+                    entry = pickle.load(f)
+                else:
+                    entry = pickle.load(f, encoding='latin1')
+                self.origin_data.append(entry['data'])
+
+    def _save_new_dataset(self, dataset_x,dataset_y, id):
+        temp_shuffle_dataset = list(zip(dataset_x,dataset_y))
+        random.shuffle(temp_shuffle_dataset)
+        dataset_x[:], dataset_y[:] = zip(*temp_shuffle_dataset)
+        dataset={'data': dataset_x, 'labels': dataset_y}
+        file_path = os.path.join(self.root, 'generated_dataset', 'iid_data_client{}'.format(id))
+        with open(file_path, 'wb') as f:
+            pickle.dump(dataset, f)
+        return None
+
+    def _split_iid_train_data(self, client_num):
+        data_by_class = self.rearrange_data_by_class(
+            self.origin_data.detach(),
+            self.targets.cpu().detach().numpy(),
+            len(self.classes)
+        )
+        proportions = [ 1000, 2000, 3000, 4000]     
+        idx_batch=[{} for _ in range(client_num)] 
+        for l in range(len(self.classes)):
+            idx_l = [i for i in range(len(data_by_class[l]))]  
+        for u, new_idx in enumerate(np.split(idx_l, proportions)):  # np.split(idx_l, proportions
+            idx_batch[u][l] = new_idx.tolist()
+        X = [[] for _ in range(client_num)]
+        y = [[] for _ in range(client_num)]
+        print("processing users...")
+        for u, user_idx_batch in enumerate(idx_batch):
+            for l, indices in user_idx_batch.items():
+                if len(indices) == 0: continue
+                X[u] += data_by_class[l][indices].tolist()
+                y[u] += (l * np.ones(len(indices))).tolist()
+        
+        for u in range(client_num):
+            self._save_new_dataset(X[u], y[u], u)
+
+        return None
+
+    def rearrange_data_by_class(self, data, targets, n_class):
+        new_data = []
+        for i in trange(n_class):
+            idx = targets == i
+            new_data.append(data[idx])
+        return new_data
 
     def _check_integrity(self):
         return True
